@@ -1,0 +1,94 @@
+```proto
+syntax = "proto3";
+
+package com.mastercard.hackathon;
+
+import "google/protobuf/struct.proto";
+
+message Address {
+    string city = 1;
+    string country = 2;
+    string state = 3;
+    string street = 4;
+    string zip = 5;
+}
+
+message CardCreationRequest {
+    Address billingAddress = 1;
+    string cardNumber = 2; // full credit card number (PAN)
+    string cardType = 3;
+    string consumerId = 4; // cardholder's name
+    string cvv = 5; // Card Verification Value (3 or 4 digits)
+    string expirationMonth = 6; // Two-digit expiration month (MM)
+    string expirationYear = 7; // Two or four-digit expiration year (YY or YYYY)
+}
+
+message CardDetails {
+    string brand = 1; // Brand of the credit card (e.g., MASTERCARD)
+    string cardStatus = 2;
+    string cardType = 3;
+    string consumerId = 4; // cardholder's name
+    string createdAt = 5; // Timestamp when the card was tokenized
+    string digitalCardId = 6; // Unique identifier for the digital representation of the card
+    string expirationMonth = 7; // Two-digit expiration month (MM)
+    string expirationYear = 8; // Two or four-digit expiration year (YY or YYYY)
+    string last4 = 9; // Last 4 digits of the original credit card number
+    string token = 10; // The unique token representing the credit card
+    string tokenExpiry = 11;
+    string tokenUniqueReference = 12; // A unique reference associated with the token
+    string updatedAt = 13; // Last timestamp when the card details were updated
+}
+
+message CardSearchRequest {
+    string consumerId = 1;
+    string last4 = 2; // Last 4 digits of the credit card number
+    int32 limit = 3; // Maximum number of results to return
+    int32 offset = 4; // Number of results to skip for pagination
+}
+
+message CardTokenizationResponse {
+    string cardStatus = 1;
+    string cardType = 2;
+    string consumerId = 3; // Identifier consumer id
+    string createdAt = 4; // Card created
+    string digitalCardId = 5; // Identifier for the digital representation of the card, if applicable
+    google.protobuf.Struct programConfigData = 6; // Configuration data related to the card program
+    string token = 7; // The unique token representing the credit card
+    string tokenExpiry = 8;
+    string tokenUniqueReference = 9; // A unique reference associated with the token
+    string updatedAt = 10; // Card created
+}
+
+message CardUpdateDetails {
+    string cardStatus = 1;
+    string consumerId = 2; // Consumer id
+    string expirationMonth = 3; // New two-digit expiration month (MM)
+    string expirationYear = 4; // New two or four-digit expiration year (YY or YYYY)
+}
+
+message ErrorDetail {
+    string field = 1;
+    string issue = 2;
+}
+
+message ErrorDetails {
+    string code = 1; // A unique error code
+    repeated ErrorDetail details = 2; // Specific validation errors or additional information
+    string message = 3; // A human-readable error message
+}
+
+message DigitalCardIdRequest {
+    string digitalCardId = 1;
+}
+
+message Empty {}
+
+service HackathonService {
+    rpc createCardToken(CardCreationRequest) returns (CardTokenizationResponse);
+    rpc searchCards(CardSearchRequest) returns (stream CardDetails);
+    rpc getCardByDigitalCardId(DigitalCardIdRequest) returns (CardDetails);
+    rpc deleteCardByDigitalCardId(DigitalCardIdRequest) returns (Empty);
+    rpc updateCardByDigitalCardId(CardUpdateDetails) returns (CardDetails);
+}
+```
+Please note that this .proto file assumes that the ErrorDetails message will be used in the gRPC status details (i.e., status trailers) for error handling. If you want to include ErrorDetails in the response messages for each RPC, you'll need to define it in each response message.
