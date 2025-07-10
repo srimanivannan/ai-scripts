@@ -46,3 +46,19 @@ Less room for human error.
 
 
 ### it’s relevant, practical, and shows real engineering empathy.
+
+### commands
+
+```shell
+ghz --insecure \
+  --proto /Users/mani/Downloads/grpc-user-refactor_with_ai/src/main/proto/user_service.proto \
+  --call com.example.grpc.UserService.GetUser \
+  -d '{"id":"123"}' \
+  -n 10000 \
+  -c 100 \
+  localhost:9090
+```
+
+```shell
+ab -n 10000 -c 100 https://www.mastercard.us/en-us.html
+```
