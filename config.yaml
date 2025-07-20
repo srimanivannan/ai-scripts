@@ -1,0 +1,12 @@
+existing_rest_project_root: /Users/mani/hackathon/spring-hackathon-service
+existing_build_gradle: /Users/mani/hackathon/spring-hackathon-service/build.gradle
+proto_file_path: /Users/mani/hackathon/ai-scripts/cards.proto
+output_dir: /Users/mani/hackathon/demo-grpc-hackathon-service
+impl_base_package: com.mastercard.hackathon.grpc
+ignore:
+  - "\\.git"
+  - "target"
+  - "build"
+  - "\\.idea"
+  - "\\.gradle"
+  - ".*\\.log$"

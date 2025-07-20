@@ -1,0 +1,57 @@
+@startuml
+title gRPC + gRPC‑Gateway Deployment & Message Flow
+
+actor "HTTP_CLIENT" as HTTP
+actor "gRPC_CLIENT"  as GRPC
+
+box "API Layer"
+  participant "gRPC‑Gateway (proxy)" as Gateway
+end box
+
+box "Service Layer"
+  participant "gRPC Server (UserService)" as Server
+end box
+
+database "Database" as DB
+== HTTP Client -> GRPC Gateway Proxy -> GRPC Service ==
+HTTP -> Gateway : "POST /v1/users\n{\"name\":\"Alice\"}\n// JSON"
+activate Gateway
+
+note right of Gateway
+  Gateway deserializes:\n
+  JSON → Protobuf\n
+  CreateUserRequest
+end note
+
+Gateway -> Server : "CreateUser(CreateUserRequest)\n// Protobuf"
+activate Server
+
+note right of Server
+  Server receives:\n
+  Protobuf message\n
+  UserService.CreateUser
+end note
+
+Server -> Server : (business logic)
+Server -> DB     : "SQL query"
+DB --> Server    : "SQL result"
+Server -> Gateway : "User(id=123,name=\"Alice\")\n// Protobuf"
+deactivate Server
+
+note left of Gateway
+  Gateway serializes:\n
+  Protobuf → JSON\n
+  {\"id\":123,\"name\":\"Alice\"}
+end note
+
+Gateway --> HTTP : "200 OK\n{\"id\":123,\"name\":\"Alice\"}"
+deactivate Gateway
+
+== GRPC client -> GRPC Service ==
+
+GRPC -> Server : "CreateUser(CreateUserRequest)\n// Protobuf"
+activate Server
+Server --> GRPC : "User\n// Protobuf"
+deactivate Server
+
+@enduml

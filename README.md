@@ -62,3 +62,30 @@ ghz --insecure \
 ```shell
 ab -n 10000 -c 100 https://www.mastercard.us/en-us.html
 ```
+### proto generator
+
+```shell
+python3 ai-proto-generator.py cards.yaml \
+    --output_proto_file cards.proto \
+    --package_name com.mastercard.hackathon \
+    --base_service_name CommonService
+```
+
+```shell
+python3 openapi_to_proto_code.py src-composite-checkout.yaml \
+         --package com.mastercard.src.ce \
+         --service Mani \
+         --output src-composite-checkout.proto
+```
+
+```shell
+python3 openapi_to_proto_code.py address-service.yaml \
+         --package com.mastercard.alberta.addressservice \
+         --service Address \
+         --output address.proto
+```
+
+### To generate new grpc folder
+```shell
+python3 spring-rest-grpc-migrator.py -c config.yaml
+```

@@ -1,26 +1,37 @@
+import argparse
+
 import openai
 import yaml
 import os
-import re # Import the regular expression module
+import re  # Import the regular expression module
+
 
 def clean_proto_content(raw_content):
     """
     Extracts the .proto content strictly between ```proto and ``` markdown fences.
-    
+
     Args:
         raw_content (str): The raw string content received from the OpenAI API.
 
     Returns:
         str: The cleaned .proto content, or the raw content if fences are not found.
     """
-    # Robust cleanup: Extract content strictly between ```proto and ```
-    match = re.search(r"```proto\n(.*?)```", raw_content, re.DOTALL)
+    # Robust cleanup: Extract content strictly between ```protobuf and ```
+    match = re.search(r"```protobuf\n(.*?)```", raw_content, re.DOTALL)
+    match1 = re.search(r"```proto\n(.*?)```", raw_content, re.DOTALL)
+    match_generic = re.search(r"```(?:\w+)?\n(.*?)```", raw_content, re.DOTALL)  # Generic code block
+
     if match:
         return match.group(1).strip()
+    elif match1:
+        return match1.group(1).strip()
+    elif match_generic:
+        # If no specific proto/protobuf block, try a generic code block
+        return match_generic.group(1).strip()
     else:
-        # Fallback if the expected markdown fences are not found
-        print("Warning: Could not find expected '```protobuf' and '```' fences. Returning raw content.")
-        return raw_content
+        # If no markdown fences are found, return the raw content, assuming it's already clean
+        return raw_content.strip()
+
 
 def call_openai_for_proto_conversion(openapi_spec_str, openai_api_key):
     """
@@ -53,11 +64,15 @@ def call_openai_for_proto_conversion(openapi_spec_str, openai_api_key):
     10. Ensure all fields have appropriate numerical tags.
     11. Handle optional fields by making them not `required` in OpenAPI and just defining them in proto.
     12. For error handling, define a common `ErrorDetails` message and use it in `rpc` responses if applicable, or rely on gRPC status codes. For this conversion, just define the `ErrorDetails` message.
-    13. **Custom Message Requirement:**
-        - Define a new message called `DigitalCardIdRequest` with a single `string` field named `digitalCardId`.
-        - Use `DigitalCardIdRequest` as the request message for `rpc GetCardByDigitalCardId` and `rpc DeleteCardByDigitalCardId`.
-        - Define a new empty message called `Empty` (if not already defined by `google.protobuf.Empty`).
-        - Use this custom `Empty` message as the response for `rpc DeleteCardByDigitalCardId`.
+    13. **Standard Message Definitions for Common Patterns:**
+        - If an RPC method has no explicit response body in OpenAPI (e.g., a 204 No Content response), define a custom empty message called `Empty` and use it as the response message.
+        - For RPCs that correspond to REST endpoints taking a single path parameter or query parameter that uniquely identifies a resource (e.g., `/resources/{{id}}`), define a dedicated request message for that parameter. This message should be named `[ResourceName]IdRequest` (e.g., `DigitalCardIdRequest`) and contain a single `string` field named `id` (or the specific parameter name like `digitalCardId`).
+        - **Path Parameter to Message Field Mapping in the body:** For RPCs corresponding to PUT/PATCH semantics of REST endpoints that has path parameters (e.g., `/cards/{{digitalCardId}}`) and a request body both, ensure path parameters are included as explicit fields within the relevant gRPC request body message. meaning both should be there in message. (e.g., for rpc `UpdateCardByDigitalCardId` message `CardUpdateDetails` would contain both `{{digitalCardId}}` field and the update message fields).
+    14. **Handling Array Responses in RPCs:**
+        - If an OpenAPI endpoint returns an array or list of items (e.g., `responses: {{ '200': {{ schema: {{ type: array, items: {{ $ref: '#/components/schemas/CardDetails' }} }} }} }}`), the corresponding gRPC RPC should return a **stream of the message type** (e.g., `returns (stream CardDetails)`).
+        - Alternatively, if it's a unary RPC that needs to return a list in a single response, define a new wrapper message that contains a `repeated` field for the list (e.g., `message CardDetailsList {{ repeated CardDetails cards = 1; }}` and then `returns (CardDetailsList)`).
+        - **Crucially, do NOT use `repeated` directly in the RPC return signature (e.g., `returns (repeated CardDetails)` is incorrect).**
+
     Here is the OpenAPI YAML specification:
 
     ```yaml
@@ -67,12 +82,18 @@ def call_openai_for_proto_conversion(openapi_spec_str, openai_api_key):
     Generate only the .proto file content. Do not include any conversational text or explanations outside the .proto content.
     """
 
-    print("Sending request to OpenAI API...")
+    # 13. **Standard Message Definitions for Common Patterns:**
+    #     - If an RPC method has no explicit response body in OpenAPI (e.g., a 204 No Content response), define a custom empty message called `Empty` and use it as the response message.
+    #     - For RPCs that correspond to REST endpoints taking a single path parameter or query parameter that uniquely identifies a resource (e.g., `/resources/{id}`), define a dedicated request message for that parameter. This message should be named `[ResourceName]IdRequest` (e.g., `DigitalCardIdRequest`) and contain a single `string` field named `id` (or the specific parameter name like `digitalCardId`).
+    #     - **Path Parameter to Message Field Mapping:** For RPCs corresponding to REST endpoints that use path parameters (e.g., `/items/{itemId}/update`), ensure these path parameters are included as explicit fields within the relevant gRPC request message. If a PUT/PATCH operation has both a path parameter and a request body, combine the path parameter into the request body message (e.g., `UpdateItemRequest` would contain both `itemId` and the update fields).
+
+    print(f"\nIt's in progress. Hang on!")
     try:
         response = openai.chat.completions.create(
             model="gpt-4",  # You can use "gpt-3.5-turbo" for faster but potentially less accurate results
             messages=[
-                {"role": "system", "content": "You are a helpful assistant that converts OpenAPI specs to gRPC proto files."},
+                {"role": "system",
+                 "content": "You are a helpful assistant that converts OpenAPI specs to gRPC proto files."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.7,
@@ -86,7 +107,9 @@ def call_openai_for_proto_conversion(openapi_spec_str, openai_api_key):
         print(f"An unexpected error occurred during OpenAI call: {e}")
         return None
 
-def convert_openapi_to_proto(openapi_spec_path, output_proto_path, openai_api_key, skip_openai_call=False, raw_content_for_cleanup=None):
+
+def convert_openapi_to_proto(openapi_spec_path, output_proto_path, openai_api_key, skip_openai_call=False,
+                             raw_content_for_cleanup=None):
     """
     Converts an OpenAPI (Swagger) specification file into a gRPC .proto file.
     Can optionally skip the OpenAI API call and use provided raw content for cleanup.
@@ -128,45 +151,58 @@ def convert_openapi_to_proto(openapi_spec_path, output_proto_path, openai_api_ke
 
 
 if __name__ == "__main__":
-    openapi_file = '/Users/mani/hackathon/spring-hackathon-service/src/main/resources/cards.yaml'
-    output_proto_file = 'cards.proto' # Keeping the output file name consistent
-    
+    openapi_file = '/Users/e117686/repos/hackathon/spring-hackathon-service/src/main/resources/cards.yaml'
+    output_proto_file = 'cards.proto'
+
     openai_key = os.getenv("OPENAI_API_KEY")
+
+    parser = argparse.ArgumentParser(description="Convert OpenAPI (Swagger) spec to gRPC Protobuf (.proto)")
+    parser.add_argument("openapi_file", type=str, help="Path to the OpenAPI YAML/JSON file.")
+    parser.add_argument("--output_proto_file", type=str, default="output_api.proto",
+                        help="Path where the generated .proto file will be saved (default: output_api.proto).")
+    parser.add_argument("--model", type=str, default="llama3",
+                        help="The Ollama model to use for conversion (default: llama3).")
+
+    args = parser.parse_args()
+
+    openapi_file = args.openapi_file
+    output_proto_file = args.output_proto_file
+    model_name = args.model
 
     if not openai_key:
         print("Error: OPENAI_API_KEY environment variable not set.")
         print("Please set the OPENAI_API_KEY environment variable with your OpenAI API key.")
     else:
         # --- Option 1: Call OpenAI API and then clean (standard workflow) ---
-        print("\n--- Hi, I'm a MACS AI assitant. I can migrate the exsiting openapi spec into grpc message.---")
-        print(f"--- Started working on converting  {openapi_file} spec into grpc message.---")
+        print("\n--- Hi, I'm a MACS assistant. I can migrate the exsiting openapi spec into grpc message.---")
+        print(f"\n\n--- Started working on converting  {openapi_file} spec into grpc message.---")
 
-        #convert_openapi_to_proto(openapi_file, output_proto_file, openai_key)
+        convert_openapi_to_proto(openapi_file, output_proto_file, openai_key)
 
         # --- Option 2: Skip OpenAI API call and only run cleanup on a predefined string ---
         # This is useful for debugging the cleanup logic without incurring API costs.
         # print("\n--- Running cleanup only (skipping OpenAI API call) ---")
-        
-        # # Read content from cards.proto for cleanup
-        proto_file_for_cleanup_path = 'cards.proto'
-        read_content_for_cleanup = None
-        if os.path.exists(proto_file_for_cleanup_path):
-            try:
-                with open(proto_file_for_cleanup_path, 'r') as f:
-                    read_content_for_cleanup = f.read()
-                #print(f"Read content from {proto_file_for_cleanup_path} for cleanup.")
-            except Exception as e:
-                print(f"Error reading {proto_file_for_cleanup_path}: {e}")
-        else:
-            print(f"Error: {proto_file_for_cleanup_path} not found. Cannot perform cleanup without content.")
 
-        if read_content_for_cleanup:
-            convert_openapi_to_proto(
-                openapi_file, # Still needs this for file existence check, but won't read it for prompt
-                'cards_double_checked_file.proto', # Output to a new file to distinguish
-                openai_key, # API key still needed by function signature, but won't be used if skip_openai_call=True
-                skip_openai_call=True,
-                raw_content_for_cleanup=read_content_for_cleanup
-            )
-        else:
-            print("Skipping cleanup only option due to missing content.")
+        # # Read content from cards.proto for cleanup
+        # proto_file_for_cleanup_path = 'cards.proto'
+        # read_content_for_cleanup = None
+        # if os.path.exists(proto_file_for_cleanup_path):
+        #     try:
+        #         with open(proto_file_for_cleanup_path, 'r') as f:
+        #             read_content_for_cleanup = f.read()
+        #         # print(f"Read content from {proto_file_for_cleanup_path} for cleanup.")
+        #     except Exception as e:
+        #         print(f"Error reading {proto_file_for_cleanup_path}: {e}")
+        # else:
+        #     print(f"Error: {proto_file_for_cleanup_path} not found. Cannot perform cleanup without content.")
+        #
+        # if read_content_for_cleanup:
+        #     convert_openapi_to_proto(
+        #         openapi_file,  # Still needs this for file existence check, but won't read it for prompt
+        #         'cards_double_checked_file.proto',  # Output to a new file to distinguish
+        #         openai_key,  # API key still needed by function signature, but won't be used if skip_openai_call=True
+        #         skip_openai_call=True,
+        #         raw_content_for_cleanup=read_content_for_cleanup
+        #     )
+        # else:
+        #     print("Skipping cleanup only option due to missing content.")
