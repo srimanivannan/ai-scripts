@@ -7,6 +7,7 @@ from typing import Optional, Tuple, List, Dict
 
 
 def resolve_ref(ref: str, spec: dict) -> dict:
+    """Resolve a JSON Reference (e.g. "#/components/schemas/Address")."""
     parts = ref.lstrip("#/").split("/")
     node = spec
     for p in parts:
@@ -24,12 +25,12 @@ def map_type(openapi_type: str) -> str:
 
 
 def safe_name(name: str) -> str:
-    # for field names
+    # Field names must be valid identifiers
     return re.sub(r'[^A-Za-z0-9_]', '_', name)
 
 
 def sanitize_tag(tag: str) -> str:
-    # remove any chars illegal in service names
+    # Service names must be Alnum only
     return re.sub(r'[^A-Za-z0-9]', '', tag)
 
 
@@ -37,7 +38,6 @@ def generate_message_from_schema(name: str, schema: dict, spec: dict) -> str:
     lines = [f"message {name} {{"]
     props = schema.get("properties", {}) or {}
     idx = 1
-
     for prop, val in props.items():
         field = safe_name(prop)
 
@@ -56,13 +56,11 @@ def generate_message_from_schema(name: str, schema: dict, spec: dict) -> str:
             idx += 1
             continue
 
-        # map property (object with additionalProperties)
+        # map property
         elif isinstance(val, dict) and val.get("type") == "object" and "additionalProperties" in val:
             ap = val["additionalProperties"]
-            # if additionalProperties is a schema object
             if isinstance(ap, dict):
                 vtype = map_type(ap.get("type", "string"))
-            # if additionalProperties is boolean true/false
             else:
                 vtype = "string"
             lines.append(f"  map<string, {vtype}> {field} = {idx};")
@@ -81,10 +79,17 @@ def generate_message_from_schema(name: str, schema: dict, spec: dict) -> str:
 
 
 def generate_schema_messages(spec: dict) -> List[str]:
-    out = []
-    for name, schema in spec.get("components", {}).get("schemas", {}).items():
-        out.append(generate_message_from_schema(name, schema, spec))
-    return out
+    return [
+        generate_message_from_schema(name, schema, spec)
+        for name, schema in spec.get("components", {}).get("schemas", {}).items()
+    ]
+
+
+def find_json_schema(content_block: dict) -> Optional[dict]:
+    for media, media_obj in content_block.items():
+        if media.startswith("application/json"):
+            return media_obj.get("schema")
+    return None
 
 
 def extract_body_schema(op: dict, spec: dict) -> Optional[dict]:
@@ -93,27 +98,44 @@ def extract_body_schema(op: dict, spec: dict) -> Optional[dict]:
         return None
     if "$ref" in rb:
         rb = resolve_ref(rb["$ref"], spec)
-    return rb.get("content", {}) \
-        .get("application/json", {}) \
-        .get("schema")
+    return find_json_schema(rb.get("content", {}))
 
 
 def extract_response_schema(op: dict, spec: dict) -> Tuple[str, Optional[dict]]:
-    for code in ("200", "201", "default"):
-        resp = op.get("responses", {}).get(code)
-        if not resp:
+    """
+    Pick the first 2xx response, or default. Returns (messageName, inlineSchema?).
+    """
+    responses = op.get("responses", {})
+    # 1) find a 2xx response by integer or string code
+    success_resp = None
+    for code_key, resp in responses.items():
+        try:
+            code_int = int(code_key)
+        except:
             continue
-        if "$ref" in resp:
-            resp = resolve_ref(resp["$ref"], spec)
-        content = resp.get("content", {}).get("application/json", {})
-        schema = content.get("schema")
-        if schema:
-            if "$ref" in schema:
-                return schema["$ref"].split("/")[-1], None
-            else:
-                return f"{op.get('operationId', code)}Response", schema
-        break
-    return "Empty", None
+        if 200 <= code_int < 300:
+            success_resp = resp
+            break
+    # 2) fallback to 'default' if none found
+    if not success_resp:
+        success_resp = responses.get("default")
+    if not success_resp:
+        return "Empty", None
+
+    if "$ref" in success_resp:
+        success_resp = resolve_ref(success_resp["$ref"], spec)
+
+    schema = find_json_schema(success_resp.get("content", {}))
+    if not schema:
+        return "Empty", None
+
+    if isinstance(schema, dict) and "$ref" in schema:
+        # direct reference
+        return schema["$ref"].split("/")[-1], None
+    else:
+        # inline schema → create a new message
+        msg_name = f"{op.get('operationId', 'Response')}Response"
+        return msg_name, schema
 
 
 def generate_param_message(name: str, params: List[dict]) -> str:
@@ -139,7 +161,7 @@ def generate_services(
     tag_map: defaultdict = defaultdict(list)
     extras: Dict[str, str] = {}
 
-    # group by OpenAPI tags
+    # group by tags
     for path, methods in spec.get("paths", {}).items():
         for m, op in methods.items():
             if m.lower() not in ("get", "post", "put", "patch", "delete"):
@@ -147,14 +169,14 @@ def generate_services(
             tag = op.get("tags", [base_service])[0]
             tag_map[tag].append((path, m.lower(), op))
 
-    services: List[str] = []
+    services = []
     for tag, ops in tag_map.items():
         svc_name = sanitize_tag(tag)
         svc_lines = [f"service {svc_name}Service {{"]
         for path, method, op in ops:
-            rpc = op.get("operationId") or f"{method}_{path}"
+            rpc = op.get("operationId") or f"{method}_{path.replace('/', '_').replace('{', '').replace('}', '')}"
 
-            # gather parameters
+            # parameters
             params = []
             for p in op.get("parameters", []):
                 if "$ref" in p:
@@ -164,20 +186,19 @@ def generate_services(
                     params.append(p)
             in_params = [p for p in params if p.get("in") in ("path", "query", "header")]
 
-            # --- request type ---
+            # request body
             body_schema = extract_body_schema(op, spec)
             if body_schema:
-                rb = op["requestBody"]
-                if "$ref" in rb:
-                    ref = resolve_ref(rb["$ref"], spec)
-                    sch = ref["content"]["application/json"]["schema"]
-                    body_type = sch["$ref"].split("/")[-1]
+                # determine body type
+                if isinstance(body_schema, dict) and "$ref" in body_schema:
+                    body_type = body_schema["$ref"].split("/")[-1]
                 else:
                     body_type = f"{rpc}Body"
 
+                # merge params + body?
                 if in_params:
                     req_name = f"{rpc}Request"
-                    msg = [f"message {req_name} {{"]
+                    msg_lines = [f"message {req_name} {{"]
                     idx = 1
                     for p in in_params:
                         sch = p.get("schema", {}) or {}
@@ -185,16 +206,17 @@ def generate_services(
                             ftype = sch["$ref"].split("/")[-1]
                         else:
                             ftype = map_type(sch.get("type", "string"))
-                        msg.append(f"  {ftype} {safe_name(p['name'])} = {idx};")
+                        msg_lines.append(f"  {ftype} {safe_name(p['name'])} = {idx};")
                         idx += 1
-                    msg.append(f"  {body_type} body = {idx};")
-                    msg.append("}")
-                    extras[req_name] = "\n".join(msg)
+                    msg_lines.append(f"  {body_type} body = {idx};")
+                    msg_lines.append("}")
+                    extras[req_name] = "\n".join(msg_lines)
                     req_type = req_name
                 else:
                     req_type = body_type
 
-                if body_schema and not ("$ref" in rb):
+                # inline only → generate the Body message
+                if not (isinstance(body_schema, dict) and "$ref" in body_schema):
                     extras[body_type] = generate_message_from_schema(body_type, body_schema, spec)
 
             elif in_params:
@@ -204,20 +226,13 @@ def generate_services(
             else:
                 req_type = "Empty"
 
-            # --- response type ---
+            # response
             res_type, inline = extract_response_schema(op, spec)
             if inline:
                 extras[res_type] = generate_message_from_schema(res_type, inline, spec)
 
-            # --- emit RPC with HTTP annotations ---
-            svc_lines.append(f"  rpc {rpc} ({req_type}) returns ({res_type}) {{")
-            svc_lines.append(f"    option (google.api.http) = {{")
-            svc_lines.append(f'      {method}: "{path}"')
-            if method in ("post", "put", "patch"):
-                body_field = "body" if in_params else "*"
-                svc_lines.append(f'      body: "{body_field}"')
-            svc_lines.append("    };")
-            svc_lines.append("  }")
+            # emit RPC
+            svc_lines.append(f"  rpc {rpc} ({req_type}) returns ({res_type});")
         svc_lines.append("}")
         services.append("\n".join(svc_lines))
 
@@ -250,19 +265,19 @@ def generate_proto(
 
 def main():
     parser = argparse.ArgumentParser(description="OpenAPI → gRPC + HTTP Proto Generator")
-    parser.add_argument("input", help="Path to OpenAPI YAML file")
-    parser.add_argument("--package", default="api", help="`package` name in the .proto")
-    parser.add_argument("--service", default="Default", help="Base gRPC service name for untagged ops")
-    parser.add_argument("--output", default="output.proto", help="Output .proto filename")
+    parser.add_argument("input", help="OpenAPI YAML file")
+    parser.add_argument("--package", default="api", help="`package` in .proto")
+    parser.add_argument("--service", default="Default", help="base ServiceName if no tags")
+    parser.add_argument("--output", default="output.proto", help="Output .proto path")
     args = parser.parse_args()
 
     with open(args.input, "r") as f:
         spec = yaml.safe_load(f)
 
     proto = generate_proto(spec, args.package, args.service)
-    with open(args.output, "w") as out:
-        out.write(proto)
-    print(f"✅ Generated {args.output}")
+    with open(args.output, "w") as outp:
+        outp.write(proto)
+    print(f"SUCCESS! Generated {args.output}")
 
 
 if __name__ == "__main__":

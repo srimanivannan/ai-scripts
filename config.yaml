@@ -1,8 +1,11 @@
 existing_rest_project_root: /Users/mani/hackathon/spring-hackathon-service
 existing_build_gradle: /Users/mani/hackathon/spring-hackathon-service/build.gradle
+existing_build_gradle_macs_file: /Users/mani/hackathon/ai-scripts/build.gradle
 proto_file_path: /Users/mani/hackathon/ai-scripts/cards.proto
 output_dir: /Users/mani/hackathon/demo-grpc-hackathon-service
 impl_base_package: com.mastercard.hackathon.grpc
+add_ai_capability: false
+skip_gradle_build: false
 ignore:
   - "\\.git"
   - "target"
@@ -10,3 +13,10 @@ ignore:
   - "\\.idea"
   - "\\.gradle"
   - ".*\\.log$"
+
+#extra_copy:
+#  - src: /com/java/Security.java
+#    dest: /com/java/Security.java
+#    when: add_ai_capability
+#  - src: /com/grpc
+#    dest: /com/grpc
